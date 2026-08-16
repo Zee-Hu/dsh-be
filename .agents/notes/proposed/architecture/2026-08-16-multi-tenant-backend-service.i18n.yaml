@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/proposed/architecture/2026-08-16-multi-tenant-backend-service.md
-2026-08-16-multi-tenant-backend-service.md: 876519b328274f5bb234e875c97309756d990743
-2026-08-16-multi-tenant-backend-service.zh.md: 681e14bf15db358197b4635f9cdffe42996a6c02
+2026-08-16-multi-tenant-backend-service.md: 6bbb6902b0e44f3bfe5b4c93df3c9ea877eb69ea
+2026-08-16-multi-tenant-backend-service.zh.md: 88c3fc42337cb7c39b3f592bccf0774c097151af
