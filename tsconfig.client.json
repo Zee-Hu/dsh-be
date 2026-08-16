@@ -25,9 +25,7 @@
     "packages/*/*/tests/**/*.client.ts",
     // Client package outside packages/client with a local CSS module face.
     "packages/extensions/ui-cordis/src/css-modules.d.ts",
-    "packages/client/tsdown.client.ts",
-    "scripts/client-bundle-css.spec.ts",
-    "scripts/client-bundle-purity.spec.ts"
+    "packages/client/tsdown.client.ts"
   ],
   // A `*.host.spec.ts` covers the Host half of a split client package and
   // belongs to the host aggregate, which excludes this program's `*.client.*`
