@@ -1,5 +1,6 @@
 /** Host HTTP bridge for browser-client RPC. */
 import type { Context } from '@deepseek-ai/cordis'
+import type { IncomingMessage } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-attachment'
 // Activates the webServer Context merge used below.
@@ -57,12 +58,22 @@ export interface ConnectionConfig {
    * that is not a bare, canonical authority fails the plugin load.
    */
   trustedHosts?: string[]
+  /**
+   * Origins allowed to call `/api` cross-origin (CORS). Empty (the default)
+   * keeps the same-origin posture: no `Access-Control-Allow-Origin` is ever
+   * emitted. List the separated frontend's origins (e.g.
+   * `['http://localhost:5173']`) for exact-Origin matching, or `['*']` to
+   * allow every origin (intranet deployments that open CORS entirely). The
+   * Host fence (`trustedHosts` / loopback) still applies either way.
+   */
+  allowedOrigins?: string[]
   /** Maximum buffered JSON body for every `/api` request. */
   maxRequestBodyBytes?: number
 }
 
 export const Config: z<ConnectionConfig> = z.object({
   trustedHosts: z.array(String).default([]),
+  allowedOrigins: z.array(String).default([]),
   maxRequestBodyBytes: z.natural().min(1).default(DEFAULT_MAX_REQUEST_BODY_BYTES),
 })
 
@@ -119,6 +130,33 @@ const PRIVILEGED_METHODS = new Set([
 ])
 
 /**
+ * CORS response headers for a cross-origin browser client. Empty when no
+ * policy is configured (the same-origin default). A request without an
+ * `Origin`, or with a disallowed one, gets no allow headers but still ships
+ * `Vary: Origin` so a shared cache never serves one origin's answer to another.
+ */
+function corsHeaders(req: IncomingMessage, allowedOrigins: readonly string[]): Record<string, string> {
+  if (allowedOrigins.length === 0) return {}
+  const origin = req.headers.origin
+  const common = {
+    'access-control-allow-methods': 'GET,POST,HEAD,OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    'access-control-max-age': '600',
+  }
+  if (origin === undefined) {
+    // 非浏览器请求（无 Origin）：CORS 头无意义；按源白名单时仍打 Vary 供缓存区分。
+    return allowedOrigins.includes('*') ? {} : { vary: 'Origin' }
+  }
+  if (allowedOrigins.includes('*')) {
+    // 通配：对所有来源放行。`*` 不能与 Access-Control-Allow-Credentials 共用，
+    // 本项目请求不带凭据，故安全。
+    return { 'access-control-allow-origin': '*', ...common }
+  }
+  if (!allowedOrigins.includes(origin)) return { vary: 'Origin' }
+  return { 'access-control-allow-origin': origin, ...common, vary: 'Origin' }
+}
+
+/**
  * Mounts the API gateway under the browser transport prefix. Every request on
  * the prefix passes the browser-trust fence first (DNS-rebinding and
  * cross-site defense — [api-request-trust](./api-request-trust.ts));
@@ -130,6 +168,7 @@ const PRIVILEGED_METHODS = new Set([
 export function apply(ctx: Context, config?: ConnectionConfig): void {
   // The Loader resolves schema defaults; hand-built test contexts may pass none.
   const trustedHosts = config?.trustedHosts ?? []
+  const allowedOrigins = config?.allowedOrigins ?? []
   const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
   // Config boundary: a malformed entry fails the load loudly here rather than
   // silently authorizing its hostname prefix at request time.
@@ -144,7 +183,7 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
         : undefined
       if (method !== undefined
         && PRIVILEGED_METHODS.has(method)
-        && !isTrustedApiRequest(request, [])) {
+        && !isTrustedApiRequest(request, [], allowedOrigins)) {
         return new Response('forbidden', { status: 403 })
       }
       if (request.method === 'GET' && (pathname === MUX_EVENTS_PATH || pathname === HOST_EVENTS_PATH)) {
@@ -162,12 +201,21 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
     kind: 'prefix',
     path: API_PATH,
     handler: async (req, res) => {
-      if (!isTrustedApiRequest(req, trustedHosts)) {
+      if (!isTrustedApiRequest(req, trustedHosts, allowedOrigins)) {
         res.writeHead(403)
         res.end('forbidden')
         return
       }
-      await bridge(req, res, fetchHandler, maxRequestBodyBytes)
+      const cors = corsHeaders(req, allowedOrigins)
+      // CORS preflight: the /api fence rejects "simple" text/plain POSTs, so
+      // every cross-origin JSON write is preflighted — OPTIONS must answer
+      // before the carrier ever sees a body.
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, cors)
+        res.end()
+        return
+      }
+      await bridge(req, res, fetchHandler, maxRequestBodyBytes, cors)
     },
   }
   ctx.effect(() => ctx.webServer.register(route), 'client-connection: /api route')
@@ -181,7 +229,7 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
       apiCtx.effect(() => apiCtx.webServer.registerUpgrade({
         path,
         handler: (req, socket, head) => {
-          if (!isTrustedApiRequest(req, trustedHosts)) {
+          if (!isTrustedApiRequest(req, trustedHosts, allowedOrigins)) {
             rejectWebSocketUpgrade(socket)
             return
           }
