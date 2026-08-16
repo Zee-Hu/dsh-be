@@ -28,12 +28,14 @@ export interface FetchHandler {
  * @param res - node:http response the bridge writes and owns to completion.
  * @param apiHandler - fetch-shaped API carrier the request is dispatched to.
  * @param maxRequestBodyBytes - maximum body bytes buffered before dispatch.
+ * @param extraHeaders - headers merged onto every response (e.g. CORS).
  */
 export async function bridge(
   req: IncomingMessage,
   res: ServerResponse,
   apiHandler: FetchHandler,
   maxRequestBodyBytes = DEFAULT_MAX_REQUEST_BODY_BYTES,
+  extraHeaders: Record<string, string> = {},
 ): Promise<void> {
   const abort = new AbortController()
   // Client-disconnect detection MUST hang off the response, not the request:
@@ -46,7 +48,7 @@ export async function bridge(
   })
   const declaredLength = req.headers['content-length']
   if (declaredLength !== undefined && Number(declaredLength) > maxRequestBodyBytes) {
-    res.writeHead(413, { connection: 'close' })
+    res.writeHead(413, { connection: 'close', ...extraHeaders })
     res.end()
     req.destroy()
     return
@@ -57,7 +59,7 @@ export async function bridge(
     const buffer = chunk as Buffer
     received += buffer.byteLength
     if (received > maxRequestBodyBytes) {
-      res.writeHead(413, { connection: 'close' })
+      res.writeHead(413, { connection: 'close', ...extraHeaders })
       res.end()
       req.destroy()
       return
@@ -73,7 +75,7 @@ export async function bridge(
     signal: abort.signal,
   })
   const response = await apiHandler.fetch(request)
-  res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
+  res.writeHead(response.status, { ...Object.fromEntries(response.headers.entries()), ...extraHeaders })
   if (response.body === null) {
     res.end()
     return
